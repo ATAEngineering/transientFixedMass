@@ -1,0 +1,364 @@
+// Copyright (C) 2022, ATA Engineering, Inc.
+// 
+// This program is free software; you can redistribute it and/or
+// modify it under the terms of the GNU Lesser General Public
+// License as published by the Free Software Foundation; either
+// version 3 of the License, or (at your option) any later version.
+// 
+// This program is distributed in the hope that it will be useful,
+// but WITHOUT ANY WARRANTY; without even the implied warranty of
+// MERCHANTABILITY or FITNESS FOR A PARTICULAR PURPOSE.  See the GNU
+// Lesser General Public License for more details.
+// 
+// You should have received a copy of the GNU Lesser General Public License
+// along with this program; if not, see
+// <https://www.gnu.org/licenses/lgpl-3.0.html>.
+
+#include <Loci.h>
+#include "read_grid.h"
+#include "bctools.h"
+#include "qvi.h"
+$include "chem.lh"
+
+#include <vector>
+#include <string>
+
+// print version when module is loaded
+namespace {
+  class PrintOnConstruct {
+  public:
+    PrintOnConstruct() {
+      if (Loci::MPI_rank ==0) {
+	cout << "CHEM transientMassInflow version: 1.0.0 compiled on "
+	     << __DATE__ << " " << __TIME__ << endl;
+      }
+    }
+  };
+  PrintOnConstruct Instance;
+}
+
+
+namespace chem {
+
+  class timePrescribedCheck : public BC_Check {
+    // This will contain the error message when an error is present.
+    string error_message ;
+  public:
+    // This contains a list of boundary conditions that this checker will
+    // check.  If there are more than one, put commas between them.
+    std::string boundaryConditions() { return "fixedMass" ; }
+    // This indicates which variables will be involved with the check
+    // By returning true you are certifying all of the variables in the
+    // list, in which case no error will be found even if other boundary
+    // condition checks return errors.
+    std::string variablesChecked() { return "transientMdot,transientMassFlux,mdot,T0,massFlux,mixture"; }
+    
+    bool checkOptions(const options_list &bc_options) {
+      error_message = "" ;
+      // If transientMdot option exists then check its usage
+      if(bc_options.optionExists("transientMdot")) {
+        // transientMdot replaces other fixedMass options
+        if(bc_options.optionExists("mdot") ||
+           bc_options.optionExists("T0") ||
+           bc_options.optionExists("massFlux") ||
+           bc_options.optionExists("mixture") ||
+           bc_options.optionExists("transientMassFlux")) {
+          error_message = "transientMdot option to fixed mass is incompatible with transientMassFlux,mdot,T0,massFlux, and mixture" ;
+          return false ;
+        }
+        if(bc_options.getOptionValueType("transientMdot") == Loci::STRING) {
+          string filename ;
+          bc_options.getOption("transientMdot",filename) ;
+          ifstream file(filename.c_str()) ;
+          if(file.fail()) {
+            error_message = "unable to open file '" + filename ;
+            error_message += "' given by transientMdot option" ;
+            return false ;
+          }
+          return true ;
+        }
+        error_message = "transientMdot should be assigned the filename of the time prescribed data file" ;
+        return false ;
+      }
+
+      // If transientMassFlux option exists then check its usage
+      if(bc_options.optionExists("transientMassFlux")) {
+        // transientMassFlux replaces other fixedMass options
+        if(bc_options.optionExists("mdot") ||
+           bc_options.optionExists("T0") ||
+           bc_options.optionExists("massFlux") ||
+           bc_options.optionExists("mixture") ||
+           bc_options.optionExists("transientMdot")) {
+          error_message = "transientMassFlux option to fixed mass is incompatible with transientMdot,mdot,T0,massFlux, and mixture" ;
+          return false ;
+        }
+        if(bc_options.getOptionValueType("transientMassFlux") == Loci::STRING) {
+          string filename ;
+          bc_options.getOption("transientMassFlux",filename) ;
+          ifstream file(filename.c_str()) ;
+          if(file.fail()) {
+            error_message = "unable to open file '" + filename ;
+            error_message += "' given by transientMassFlux option" ;
+            return false ;
+          }
+          return true ;
+        }
+        error_message = "transientMassFlux should be assigned the filename of the time prescribed data file" ;
+        return false ;
+      }
+
+      // If transientMdot or transientMassFlux is not specified then this BC can't certify the
+      // other variables so it returns false
+      return false ;
+    }
+
+    
+    std::ostream &ErrorMessage(std::ostream &s) {
+      s << error_message << endl ;
+      return s ;
+    }
+  } ;
+
+  // Register the bccheck, works similar to the register_rule of Loci
+  register_BC<timePrescribedCheck> register_timePrescribedCheck ;
+
+  $type transientMdot_BCoption Constraint;
+  $type transientMassFlux_BCoption Constraint;
+
+  // Here is a data structure for storing the time prescribed data
+  const int MAX_SPECIES = 20;
+  struct prescribed_fixed_mass_inflow_data {
+    double t;
+    double fixedMass;
+    double T0;
+    Loci::Array<double,MAX_SPECIES> mf;
+  } ;
+
+  std::ostream &operator << (std::ostream &s, const prescribed_fixed_mass_inflow_data &d) {
+    s << d.t << ' ' << d.fixedMass << ' ' << d.T0  ;
+    for(int i=0;i<MAX_SPECIES;++i)
+      s << ' ' << d.mf[i]  ;
+    s << endl ;
+    return s ;
+  }
+
+  std::istream &operator >> (std::istream &s, prescribed_fixed_mass_inflow_data &d) {
+    s >> d.t >> d.fixedMass >> d.T0 ;
+    for(int i=0;i<MAX_SPECIES;++i)
+      s >> d.mf[i] ;
+    return s ;
+  }
+}
+
+namespace Loci {
+  // This allows us to put the prescribed_fixed_mass_inflow_data into a Loci container
+  template<> struct data_schema_traits<chem::prescribed_fixed_mass_inflow_data> {
+    typedef IDENTITY_CONVERTER Schema_Converter ;
+    static DatatypeP get_type() {
+      CompoundDatatypeP ct = CompoundFactory(chem::prescribed_fixed_mass_inflow_data()) ;
+      LOCI_INSERT_TYPE(ct,chem::prescribed_fixed_mass_inflow_data,t) ;
+      LOCI_INSERT_TYPE(ct,chem::prescribed_fixed_mass_inflow_data,fixedMass) ;
+      LOCI_INSERT_TYPE(ct,chem::prescribed_fixed_mass_inflow_data,T0) ;      
+      LOCI_INSERT_TYPE(ct,chem::prescribed_fixed_mass_inflow_data,mf) ;
+      return DatatypeP(ct) ;
+    }
+  } ;
+}
+
+namespace chem {
+
+  // This routine reads a timeseries out of a file.
+  // The format of the file is as follows:
+  // NS - number of species
+  // for(i=0;i<NS;++i)
+  //   NS species names
+  // NT - number of time data
+  // for(i=0;i<NT;++i) {
+  //   input:
+  //   time
+  //   mdot
+  //   T0
+  //   for(int i=0;i<NS;++i)
+  //     mf[i] (species mass fractions for species i)
+  
+  void read_time_series(string filename,
+                        std::vector<prescribed_fixed_mass_inflow_data> &data,
+                        std::vector<std::string> &species) {
+    ifstream file(filename.c_str()) ;
+    if(file.fail()) {
+      cerr << "unable to read '" << filename << "'" << endl ;
+      Loci::Abort() ;
+    }
+    int numSpecies = 0;
+    file >> numSpecies ;
+    if(numSpecies > MAX_SPECIES) {
+      cerr << "too many species in '" << filename << "'" << endl ;
+      Loci::Abort() ;
+    }
+    for(int i=0;i<numSpecies;++i) {
+      std::string s ;
+      file >> s ;
+      species.push_back(s) ;
+    }
+
+    int numData = 0 ;
+    file >> numData ;
+    data.clear() ;
+    for(int i=0;i<numData;++i) {
+      data.push_back(prescribed_fixed_mass_inflow_data()) ;
+      file >> data.back().t >> data.back().fixedMass >> data.back().T0 ;
+      for(int j=0;j<MAX_SPECIES;++j)
+        data.back().mf[j] = 0. ;
+      data.back().mf[0] = 1. ;
+      for(int j=0;j<numSpecies;++j)
+        file >> data.back().mf[j] ;
+      double sum = 0 ;
+      for(int j=0;j<numSpecies;++j)
+        sum += data.back().mf[j] ;
+      for(int j=0;j<numSpecies;++j)
+        data.back().mf[j] *= 1./sum ;
+    }
+  }
+
+  // Compute interpolated values for a given time, uses linear search to find
+  // time interval
+  prescribed_fixed_mass_inflow_data
+  interpolate_time(const std::vector<prescribed_fixed_mass_inflow_data> &timeset,
+                   real time) {
+    if(time<timeset[0].t)
+      return timeset[0] ;
+    for(size_t i=0;i<timeset.size()-1;++i) {
+      if(time>=timeset[i].t && time<=timeset[i+1].t) {
+        real t = (time-timeset[i].t)/(timeset[i+1].t-timeset[i].t) ;
+        real s = 1.-t ;
+        prescribed_fixed_mass_inflow_data interp ;
+        interp.t = time ;
+        interp.fixedMass = timeset[i].fixedMass*s+timeset[i+1].fixedMass*t ;
+        interp.T0 = timeset[i].T0*s+timeset[i+1].T0*t ;
+        for(int j=0;j<MAX_SPECIES;++j) 
+          interp.mf[j] = timeset[i].mf[j]*s+timeset[i+1].mf[j]*t ;
+        return interp ;
+      }
+    }
+    return timeset[timeset.size()-1] ;
+  }
+
+
+  $type mdot_inflow_prescribed store<std::vector<prescribed_fixed_mass_inflow_data> >;
+  $type species_prescribed store<Loci::Array<int,MAX_SPECIES> >;
+  $type ns_prescribed store<int>;
+  $rule pointwise(mdot_inflow_prescribed, ns_prescribed, species_prescribed <- BC_options, qvi), 
+      constraint(transientMdot_BCoption) {
+    std::string filename ;
+    $BC_options.getOption("transientMdot",filename);
+    std::vector<string> species;
+    read_time_series(filename,$mdot_inflow_prescribed,species);
+    $ns_prescribed = species.size() ;
+    if($qvi.numSpecies() == 1) {
+      $ns_prescribed = 0;
+    }
+    for(int i = 0; i < MAX_SPECIES; ++i) {
+      $species_prescribed[i] = 0;
+    }
+    for(int i = 0; i < $ns_prescribed; ++i) {
+      $species_prescribed[i] = $qvi.speciesIndex(species[i]) ;
+      if($species_prescribed[i] < 0) {
+	std::cerr << "prescribed mdot file '" << filename << "' contains species " 
+                  << species[i] << " not found in simulation model." << endl;
+        Loci::Abort();
+      }
+    }
+  }
+
+  $type massFlux_inflow_prescribed store<std::vector<prescribed_fixed_mass_inflow_data> >;
+  $rule pointwise(massFlux_inflow_prescribed, ns_prescribed, species_prescribed <- BC_options, qvi), 
+      constraint(transientMassFlux_BCoption) {
+    std::string filename ;
+    $BC_options.getOption("transientMassFlux",filename);
+    std::vector<string> species;
+    read_time_series(filename,$massFlux_inflow_prescribed,species);
+    $ns_prescribed = species.size() ;
+    if($qvi.numSpecies() == 1) {
+      $ns_prescribed = 0;
+    }
+    for(int i = 0; i < MAX_SPECIES; ++i) {
+      $species_prescribed[i] = 0;
+    }
+    for(int i = 0; i < $ns_prescribed; ++i) {
+      $species_prescribed[i] = $qvi.speciesIndex(species[i]) ;
+      if($species_prescribed[i] < 0) {
+	std::cerr << "prescribed mass flux file '" << filename << "' contains species " 
+                  << species[i] << " not found in simulation model." << endl;
+        Loci::Abort();
+      }
+    }
+  }
+
+  $type mdotInTime store<real>;
+  $type T0InTime store<real>;
+  $type mixtureInTime storeVec<real>;
+  $rule pointwise(mdotInTime, T0InTime, mixtureInTime <- stime, qvi, mdot_inflow_prescribed,
+                  species_prescribed, ns_prescribed), prelude {
+    $mixtureInTime.setVecSize($qvi->numSpecies());
+  } compute {
+    for(int i=0;i<$qvi.numSpecies();++i) {
+      $mixtureInTime[i] = 0 ;
+    }
+
+    prescribed_fixed_mass_inflow_data val = interpolate_time($mdot_inflow_prescribed,
+                                                             $stime);
+    $mdotInTime = val.fixedMass;
+    $T0InTime = val.T0 ;
+    for(int i = 0; i < $ns_prescribed ; ++i) {
+      $mixtureInTime[$species_prescribed[i]] = val.mf[i] ;
+    }
+    if($ns_prescribed == 0) {
+      $mixtureInTime[0] = 1;
+    }
+
+  }
+
+  $type massFluxInTime store<real>;
+  $rule pointwise(massFluxInTime, T0InTime, mixtureInTime <- stime, qvi, massFlux_inflow_prescribed,
+                  species_prescribed, ns_prescribed), prelude {
+    $mixtureInTime.setVecSize($qvi->numSpecies());
+  } compute {
+    for(int i=0;i<$qvi.numSpecies();++i) {
+      $mixtureInTime[i] = 0 ;
+    }
+
+    prescribed_fixed_mass_inflow_data val = interpolate_time($massFlux_inflow_prescribed,
+                                                             $stime);
+    $massFluxInTime = val.fixedMass;
+    $T0InTime = val.T0 ;
+    for(int i = 0; i < $ns_prescribed ; ++i) {
+      $mixtureInTime[$species_prescribed[i]] = val.mf[i] ;
+    }
+    if($ns_prescribed == 0) {
+      $mixtureInTime[0] = 1;
+    }
+
+  }
+
+
+  $rule pointwise(transient::massFluxRef, transient::T0Ref, transient::mixtureRef <-
+                  ref->(mdotInTime, T0InTime, mixtureInTime, boundary_area)),
+      constraint(fixedMass_BC, ref->transientMdot_BCoption), prelude {
+    $mixtureRef.setVecSize($mixtureInTime.vecSize());
+  } compute {
+    $massFluxRef = $ref->$mdotInTime / $ref->$boundary_area;
+    $T0Ref = $ref->$T0InTime;
+    $mixtureRef = $ref->$mixtureInTime;
+  }
+
+  $rule pointwise(transient::massFluxRef, transient::T0Ref, transient::mixtureRef <-
+                  ref->(massFluxInTime, T0InTime, mixtureInTime)),
+      constraint(fixedMass_BC, ref->transientMassFlux_BCoption), prelude {
+    $mixtureRef.setVecSize($mixtureInTime.vecSize());
+  } compute {
+    $massFluxRef = $ref->$massFluxInTime;
+    $T0Ref = $ref->$T0InTime;
+    $mixtureRef = $ref->$mixtureInTime;
+  }
+  
+}
