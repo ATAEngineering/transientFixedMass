@@ -13,12 +13,12 @@ a full featured open source CFD code with finite-rate chemistry built on
 the Loci framework. CHEM is export controlled under the International 
 Traffic In Arms Regulations (ITAR). Both Loci and CHEM can be obtained from 
 the [SimSys Software Forum](http://www.simcenter.msstate.edu) hosted by 
-MSU. This module also requires a compiler with C++11 support.
+MSU. 
 
 # Installation Instructions
-First Loci and CHEM should be installed. The **LOCI_BASE** environment
+First Loci and CHEM should be installed. The `LOCI_BASE` environment
 variable should be set to point to the Loci installation directory. The 
-**CHEM_BASE** environment variable should be set to point to the CHEM 
+`CHEM_BASE` environment variable should be set to point to the CHEM 
 installation directory. The installation process follows the standard 
 make, make install procedure.
 
@@ -28,9 +28,9 @@ make install
 ```
 
 # Usage
-First the module must be loaded at the top of the **vars** file. 
-The **fixedMass** boundary condition may be tagged with either 
-**transientMassFlux** or **transientMdot** to specify a file containing the
+First the module must be loaded at the top of the `vars` file. 
+The `fixedMass` boundary condition may be tagged with either 
+`transientMassFlux` or `transientMdot` to specify a file containing the
 time varying boundary condition data.
 
 ```
@@ -42,7 +42,7 @@ boundary_conditions: <BC_1=fixedMass(transientMassFlux="massFlux.dat"),
 
 The format of the specified file should be the following, where the mass 
 quantity will be either the mass flux or mass flow rate depending on whether
-**transientMassFlux** or **transientMdot** is specified. The file should use
+`transientMassFlux` or `transientMdot` is specified. The file should use
 SI units for all quantities.
 
 ```
